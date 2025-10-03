@@ -17,6 +17,20 @@
           <p><strong>Passenger:</strong> {{ booking.__passenger || 'N/A' }}</p>
         </li>
       </ul>
+      <!-- Pagination Controls -->
+      <div class="pagination-controls">
+        <button 
+          @click="emit('page-change', pagination.current_page - 1)" 
+          :disabled="pagination.current_page <= 1 || loading">
+          &laquo; Previous
+        </button>
+        <span>Page {{ pagination.current_page }}</span>
+        <button 
+          @click="emit('page-change', pagination.current_page + 1)" 
+          :disabled="!pagination.has_next_page || loading">
+          Next &raquo;
+        </button>
+      </div>
     </div>
     <div v-else-if="!loading && hasSearched" class="message">
       No bookings found for the selected date range.
@@ -27,15 +41,22 @@
 <script setup lang="ts">
 import type { BookingNorm } from '../../types/booking';
 
+// Define props including the new pagination object
 defineProps<{ 
   bookings: BookingNorm[];
   selectedBooking: BookingNorm | null;
   loading: boolean;
   hasSearched: boolean;
+  pagination: {
+    current_page: number;
+    has_next_page: boolean;
+  };
 }>();
 
+// Define emits including the new page-change event
 const emit = defineEmits<{ 
   (e: 'select-booking', booking: BookingNorm): void;
+  (e: 'page-change', newPage: number): void;
 }>();
 
 const formatDT = (s?: string | null) => {
@@ -88,5 +109,36 @@ const emitSelectBooking = (booking: BookingNorm) => {
 .booking-list li.selected {
   background-color: #e0efff;
   border-color: #007bff;
+}
+
+.pagination-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.pagination-controls button {
+  padding: 8px 16px;
+  border: none;
+  background-color: #007bff;
+  color: white;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+.pagination-controls button:disabled {
+  background-color: #ccc;
+  cursor: not-allowed;
+}
+
+.pagination-controls button:hover:not(:disabled) {
+  background-color: #0056b3;
+}
+
+.pagination-controls span {
+  font-weight: bold;
 }
 </style>

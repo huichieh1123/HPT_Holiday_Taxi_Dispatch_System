@@ -1,0 +1,21 @@
+The Holiday Taxis Booking Reference.
+
+As part of your testing you can use the following reserved booking references to simulate error and success responses:
+
+TEST-111111 will return an OK response with status code 200
+
+TEST-222222 will return a NOT FOUND response with status code 404
+
+TEST-333333 will return a CANCELLED response with status code 400
+
+TEST-444444 will return a BOOKING_TRAVELLED_TOO_LONG_AGO response with status code 400
+
+TEST-555555 will return a BOOKING_TRAVELS_TOO_LONG_IN_THE_FUTURE response with status code 400
+
+TEST-666666 will return an INFORMATION_NOT_EXPECTED_FOR_THIS_BOOKING_TYPE response with status code 400
+
+TEST-777777 will return a TOO_MANY_DISTINCT_VEHICLE_IDENTIFIERS_FOR_THIS_BOOKING response with status code 400
+
+TEST-888888 will return an ATTEMPT_TO_DE_ALLOCATE_A_VEHICLE_IDENTIFIER_THAT_DOES_NOT_EXIST response with status code 400
+
+TEST-999999 will return an BOOKING_DATA_PROVIDED_TOO_EARLY response with status code 202

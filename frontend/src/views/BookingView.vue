@@ -6,10 +6,10 @@
       :loading="loading"
       :direct-fetch-loading="directFetchLoading"
       @search-by-ref="handleSearchByRef"
-      @search-by-dates="handleSearchByDates"
+      @search-by-dates="startNewSearch"
     />
 
-    <div v-if="loading || directFetchLoading" class="message">Loading...</div>
+    <div v-if="loading && !bookings.length" class="message">Loading...</div>
     <div v-if="error" class="message error">{{ error }}</div>
     <div v-if="directFetchError" class="message error">{{ directFetchError }}</div>
 
@@ -18,7 +18,9 @@
       :selected-booking="selectedBooking"
       :loading="loading"
       :has-searched="hasSearched"
+      :pagination="pagination"
       @select-booking="handleSelectBooking"
+      @page-change="handlePageChange"
     />
 
     <BookingDetail
@@ -107,36 +109,61 @@ const detailLoading = ref(false);
 const directFetchLoading = ref(false);
 const directFetchError = ref<string | null>(null);
 
+// New state for pagination
+const pagination = ref({ current_page: 1, has_next_page: false });
+const searchDates = ref<{ from: string; to: string } | null>(null);
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 // ---------- actions ----------
-const handleSearchByDates = async (dates: { from: string; to: string }) => {
+
+const fetchBookings = async (page: number) => {
+  if (!searchDates.value) return;
+
   loading.value = true;
   error.value = null;
   hasSearched.value = true;
-  bookings.value = [];
-  selectedBooking.value = null;
+  if (page === 1) {
+    bookings.value = [];
+    selectedBooking.value = null;
+  }
 
   try {
-    const response = await fetch(
-      `${API_BASE_URL}/api/bookings/from/${encodeURIComponent(dates.from)}/to/${encodeURIComponent(dates.to)}`
-    );
+    const params = new URLSearchParams({
+      dateFrom: searchDates.value.from,
+      dateTo: searchDates.value.to,
+      page: String(page),
+    });
+
+    const response = await fetch(`${API_BASE_URL}/api/bookings?${params.toString()}`);
     if (!response.ok) {
       const e = await response.json().catch(() => ({}));
       throw new Error(e.detail || `Failed to fetch bookings (${response.status})`);
     }
     const data = await response.json();
-    const list = data.bookings
-      ? Object.entries<any>(data.bookings)
-          .filter(([k, v]) => k !== 'more' && v && typeof v === 'object')
-          .map(([, v]) => normalize(v))
-      : [];
-    bookings.value = list;
+
+    const bookingsData = data.bookings || {};
+    bookings.value = Object.values(bookingsData).map(normalize);
+    pagination.value = data.pagination;
+
+    // The hydration logic can still run on the newly fetched page
     hydrateListWithDetails(5);
+
   } catch (err: any) {
     error.value = err?.message ?? String(err);
   } finally {
     loading.value = false;
+  }
+};
+
+const startNewSearch = (dates: { from: string; to: string }) => {
+  searchDates.value = dates;
+  fetchBookings(1);
+};
+
+const handlePageChange = (newPage: number) => {
+  if (newPage > 0) {
+    fetchBookings(newPage);
   }
 };
 

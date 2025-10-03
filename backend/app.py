@@ -1,7 +1,9 @@
 import os
 import datetime
 import requests
+from urllib.parse import quote
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -43,15 +45,13 @@ class LocationUpdateRequest(BaseModel):
     lng: float
     status: str
 
-from urllib.parse import quote
-
-@app.get("/api/bookings/from/{dateFrom}/to/{dateTo}")
+@app.get("/api/bookings")
 def get_bookings(
     dateFrom: str,
     dateTo: str,
-    page: int = Query(1, ge=1, description="Page number")
+    page: int = Query(1, ge=1)
 ):
-    """Search for bookings within a date range."""
+    """Search for bookings for a specific page within a date range."""
     headers = {
         "Accept": "application/json",
         "API_KEY": API_KEY,
@@ -62,10 +62,38 @@ def get_bookings(
 
     try:
         response = requests.get(api_url, headers=headers, timeout=15)
+
+        # Handle 204 No Content for pages that don't exist
+        if response.status_code == 204:
+            return {"bookings": [], "pagination": {"current_page": page, "has_next_page": False}}
+
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+
+        # The external API response is expected to be a dictionary
+        # with a 'bookings' list and an optional 'more' URL.
+        bookings_list = []
+        has_next_page = False
+
+        if isinstance(data, dict):
+            bookings_list = data.get('bookings', [])
+            has_next_page = bool(data.get('more'))
+        elif isinstance(data, list):
+            # Handle cases where the last page might just be a list
+            bookings_list = data
+
+        pagination_info = {
+            "current_page": page,
+            "has_next_page": has_next_page
+        }
+
+        return {"bookings": bookings_list, "pagination": pagination_info}
+
     except requests.exceptions.RequestException as e:
-        # 把供應商回應內容也帶回來，方便你看原因
+        # For a 404 from the external API, treat as an empty result for that page.
+        if e.response is not None and e.response.status_code == 404:
+            return {"bookings": [], "pagination": {"current_page": page, "has_next_page": False}}
+        
         detail = f"External API error: {e}"
         if getattr(e, 'response', None) is not None:
             try:
@@ -113,6 +141,8 @@ def get_booking_details(booking_ref: str):
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=502, detail=f"External API error: {e}")
 
+from urllib.parse import quote
+
 @app.post("/api/bookings/{booking_ref}/vehicles/{vehicle_identifier}/location")
 def update_location(
     booking_ref: str,
@@ -120,10 +150,6 @@ def update_location(
     update_request: LocationUpdateRequest
 ):
     """Update the location and status of a specific booking vehicle."""
-    # --- 基本驗證 ---
-    booking_ref = (booking_ref or "").strip()
-    vehicle_identifier = (vehicle_identifier or "").strip()
-
     if update_request.status not in TRIP_STATUSES:
         raise HTTPException(status_code=400, detail=f"Invalid status. Valid statuses are: {TRIP_STATUSES}")
 
@@ -137,29 +163,13 @@ def update_location(
         "VERSION": "2025-01"
     }
 
-    # --- 預檢：確認 booking 存在（同一把 API_KEY / END_POINT）---
-    check_url = f"{END_POINT}/bookings/{quote(booking_ref, safe='')}"
-    try:
-        check = requests.get(check_url, headers=headers, timeout=15)
-        if not (200 <= check.status_code < 300):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Booking '{booking_ref}' not found under this API key/env. "
-                       f"Supplier HTTP {check.status_code}: {check.text[:500]}"
-            )
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Network error when verifying booking: {e}")
-
-    # --- 組定位 payload：UTC 時間戳以 Z 結尾 ---
     now_utc = datetime.datetime.now(datetime.timezone.utc)
-    formatted_time = now_utc.isoformat(timespec='seconds')
     payload = {
-        "timestamp": formatted_time,
+        "timestamp": now_utc.isoformat(timespec='seconds'),
         "location": {"lat": update_request.lat, "lng": update_request.lng},
         "status": update_request.status
     }
 
-    # --- 發送定位 ---
     api_url = (
         f"{END_POINT}/bookings/{quote(booking_ref, safe='')}"
         f"/vehicles/{quote(vehicle_identifier, safe='')}/location"
@@ -167,19 +177,54 @@ def update_location(
 
     try:
         resp = requests.post(api_url, headers=headers, json=payload, timeout=15)
-        if not (200 <= resp.status_code < 300):
-            # 把供應商原文帶回來，定位失敗最常見：未先派車、vehicleIdentifier 不一致
-            raise HTTPException(
-                status_code=502,
-                detail=f"Supplier HTTP {resp.status_code}: {resp.text[:1000]}"
-            )
-        # 成功但 body 可能為空，避免 .json() 失敗
-        try:
-            return resp.json()
-        except ValueError:
-            return {"ok": True, "message": "Location updated (empty body from supplier)"}
+        
+        # Default success response
+        response_payload = {"success": True, "status_code": resp.status_code, "data": {}}
+
+        if resp.status_code == 200:
+            response_payload["reason"] = "OK"
+        elif resp.status_code == 202:
+            response_payload["reason"] = "BOOKING_DATA_PROVIDED_TOO_EARLY"
+        
+        if resp.text:
+            try:
+                response_payload["data"] = resp.json()
+            except ValueError:
+                response_payload["data"] = {"message": resp.text}
+
+        if 200 <= resp.status_code < 300:
+            return response_payload
+
+        # Handle error cases
+        error_payload = {
+            "success": False,
+            "status_code": resp.status_code,
+            "message": resp.text
+        }
+        
+        # Simple text matching based on rule.txt
+        resp_text = resp.text.lower()
+        if "cancelled" in resp_text:
+            error_payload["reason"] = "CANCELLED"
+        elif "travelled too long ago" in resp_text:
+            error_payload["reason"] = "BOOKING_TRAVELLED_TOO_LONG_AGO"
+        elif "travels too long in the future" in resp_text:
+            error_payload["reason"] = "BOOKING_TRAVELS_TOO_LONG_IN_THE_FUTURE"
+        elif "not expected for this booking type" in resp_text:
+            error_payload["reason"] = "INFORMATION_NOT_EXPECTED_FOR_THIS_BOOKING_TYPE"
+        elif "too many distinct vehicle" in resp_text:
+            error_payload["reason"] = "TOO_MANY_DISTINCT_VEHICLE_IDENTIFIERS_FOR_THIS_BOOKING"
+        elif "de-allocate a vehicle identifier that does not exist" in resp_text:
+            error_payload["reason"] = "ATTEMPT_TO_DE_ALLOCATE_A_VEHICLE_IDENTIFIER_THAT_DOES_NOT_EXIST"
+        elif resp.status_code == 404:
+            error_payload["reason"] = "NOT_FOUND"
+        else:
+            error_payload["reason"] = "UNKNOWN_ERROR"
+
+        return JSONResponse(status_code=resp.status_code, content=error_payload)
+
     except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"External API error: {e}")
+        raise HTTPException(status_code=502, detail=f"Network error during location update: {e}")
 
 class Driver(BaseModel):
     name: str

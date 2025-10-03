@@ -80,6 +80,20 @@ const props = defineProps<{
   detailLoading: boolean;
 }>();
 
+// Rule mapping based on rule.txt
+const ruleMessages = {
+  OK: { type: 'success', text: 'Location updated successfully.' },
+  BOOKING_DATA_PROVIDED_TOO_EARLY: { type: 'info', text: 'Location update accepted and is being processed.' },
+  NOT_FOUND: { type: 'error', text: 'Error: Booking reference not found.' },
+  CANCELLED: { type: 'error', text: 'Error: This booking has been cancelled.' },
+  BOOKING_TRAVELLED_TOO_LONG_AGO: { type: 'error', text: 'Error: This booking is too old to be updated.' },
+  BOOKING_TRAVELS_TOO_LONG_IN_THE_FUTURE: { type: 'error', text: 'Error: This booking is too far in the future to be updated.' },
+  INFORMATION_NOT_EXPECTED_FOR_THIS_BOOKING_TYPE: { type: 'error', text: 'Error: Location information is not expected for this type of booking.' },
+  TOO_MANY_DISTINCT_VEHICLE_IDENTIFIERS_FOR_THIS_BOOKING: { type: 'error', text: 'Error: Too many different vehicles have been assigned to this booking.' },
+  ATTEMPT_TO_DE_ALLOCATE_A_VEHICLE_IDENTIFIER_THAT_DOES_NOT_EXIST: { type: 'error', text: 'Error: The vehicle you are trying to de-allocate does not exist.' },
+  UNKNOWN_ERROR: { type: 'error', text: 'An unknown error occurred.' }
+};
+
 const driverForm = ref<DriverForm>({
   name: 'Driver 1',
   phoneNumber: '+441234567891',
@@ -103,7 +117,6 @@ const locationUpdateLink = ref('');
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 watch(() => props.selectedBooking, (newBooking) => {
-  // Reset state when a new booking is selected
   locationUpdateLink.value = '';
   updateMessage.value = null;
   updateError.value = null;
@@ -120,6 +133,7 @@ const formatDT = (s?: string | null) => {
   }
 };
 
+// This function now triggers a location update for demonstration
 const updateDriver = async () => {
   if (!props.selectedBooking) return;
   updating.value = true;
@@ -134,24 +148,33 @@ const updateDriver = async () => {
   }
 
   try {
-    const payload = {
-      driver: { ...driverForm.value },
-      vehicle: { ...vehicleForm.value },
-    };
-
-    const res = await fetch(`${API_BASE_URL}/api/bookings/${encodeURIComponent(ref)}/driver`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || 'Update failed');
+    const vehicleId = vehicleForm.value.registration;
+    if (!vehicleId) {
+      throw new Error('Vehicle registration is required to test the location update.');
     }
 
-    await res.json().catch(() => ({}));
-    updateMessage.value = 'Driver & vehicle updated successfully.';
+    // Dummy location data for demonstration
+    const locationPayload = {
+      lat: 34.0522,
+      lng: -118.2437,
+      status: 'AFTER_PICKUP'
+    };
+
+    const locRes = await fetch(`${API_BASE_URL}/api/bookings/${encodeURIComponent(ref)}/vehicles/${encodeURIComponent(vehicleId)}/location`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(locationPayload),
+    });
+
+    const locData = await locRes.json();
+    const rule = ruleMessages[locData.reason] || ruleMessages.UNKNOWN_ERROR;
+
+    if (!locRes.ok || rule.type === 'error') {
+      throw new Error(rule.text);
+    }
+    
+    updateMessage.value = rule.text;
+
   } catch (e: any) {
     updateError.value = e?.message ?? String(e);
   } finally {
