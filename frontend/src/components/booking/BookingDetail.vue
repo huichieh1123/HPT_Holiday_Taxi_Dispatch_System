@@ -167,7 +167,7 @@ const updateDriver = async () => {
     });
 
     const locData = await locRes.json();
-    const rule = ruleMessages[locData.reason] || ruleMessages.UNKNOWN_ERROR;
+    const rule = ruleMessages[locData.reason as keyof typeof ruleMessages] || ruleMessages.UNKNOWN_ERROR;
 
     if (!locRes.ok || rule.type === 'error') {
       throw new Error(rule.text);
