@@ -228,6 +228,7 @@ def update_location(
 
 class Driver(BaseModel):
     name: str
+    licenseNumber: int | str
     phoneNumber: str
     preferredContactMethod: str
     contactMethods: list[str]
@@ -260,18 +261,77 @@ def update_driver(
 
     vehicleIdentifier = update_request.vehicle.registration
     api_url = f"{END_POINT}/bookings/{booking_ref}/vehicles/{vehicleIdentifier}"
-
     payload = update_request.dict()
+    print("DEBUG:", payload)
+    try:
+        response = requests.put(api_url, headers=headers, json=payload, timeout=15)
+        if 200 <= response.status_code < 300:
+            return response.json()
+        else:
+            # --- DEBUGGING --- #
+            print(f"DEBUG: Supplier API Error Status Code: {response.status_code}")
+            print(f"DEBUG: Supplier API Error Response Text: {response.text}")
+            # --- END DEBUGGING --- #
+
+            reason = "UNKNOWN_ERROR"
+            message = response.text
+            try:
+                error_data = response.json()
+                message = error_data
+                # Correctly check for the nested error key
+                if isinstance(error_data.get("errors"), dict) and "toomanyvehicles" in error_data["errors"]:
+                    reason = "TOO_MANY_DISTINCT_VEHICLE_IDENTIFIERS_FOR_THIS_BOOKING"
+                # Fallback to text search just in case
+                elif "TOO_MANY_DISTINCT_VEHICLE_IDENTIFIERS_FOR_THIS_BOOKING" in response.text:
+                    reason = "TOO_MANY_DISTINCT_VEHICLE_IDENTIFIERS_FOR_THIS_BOOKING"
+            except ValueError:
+                # If response is not JSON, just check the text
+                if "TOO_MANY_DISTINCT_VEHICLE_IDENTIFIERS_FOR_THIS_BOOKING" in response.text:
+                    reason = "TOO_MANY_DISTINCT_VEHICLE_IDENTIFIERS_FOR_THIS_BOOKING"
+
+            return JSONResponse(
+                status_code=response.status_code,
+                content={"success": False, "reason": reason, "message": message}
+            )
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Network error during driver update: {e}")
+
+
+@app.delete("/api/bookings/{booking_ref}/vehicles/{vehicle_identifier}")
+def delete_vehicle(booking_ref: str, vehicle_identifier: str):
+    """Deletes a vehicle from a specific booking."""
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "API_KEY": API_KEY,
+        "VERSION": "2025-01"
+    }
+    api_url = f"{END_POINT}/bookings/{booking_ref}/vehicles/{quote(vehicle_identifier, safe='')}"
 
     try:
-        response = requests.put(api_url, headers=headers, json=payload)
-        response.raise_for_status()
-        return response.json()
+        response = requests.delete(api_url, headers=headers, timeout=15)
+
+        if response.status_code == 204:
+            return {"success": True, "message": f"Vehicle {vehicle_identifier} deleted successfully."}
+        
+        if 200 <= response.status_code < 300:
+            return {"success": True, "message": "Request successful with status " + str(response.status_code)}
+
+        else:
+            error_message = "An unknown error occurred."
+            try:
+                error_data = response.json()
+                error_message = error_data.get("message", response.text)
+            except ValueError:
+                error_message = response.text
+            
+            return JSONResponse(
+                status_code=response.status_code,
+                content={"success": False, "message": error_message}
+            )
+
     except requests.exceptions.RequestException as e:
-        detail = f"External API error: {e}"
-        if e.response is not None:
-            detail += f" - {e.response.text}"
-        raise HTTPException(status_code=502, detail=detail)
+        raise HTTPException(status_code=502, detail=f"Network error during vehicle deletion: {e}")
 
 @app.get("/api/statuses")
 def get_statuses():

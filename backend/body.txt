@@ -1,0 +1,20 @@
+{
+  "driver": {
+    "name": "Joe",
+    "licenseNumber": 42,
+    "phoneNumber": "+441273828200",
+    "preferredContactMethod": "VOICE",
+    "contactMethods": [
+      "VOICE",
+      "SMS",
+      "WHATSAPP"
+    ]
+  },
+  "vehicle": {
+    "brand": "Toyota",
+    "model": "Prius",
+    "color": "blue",
+    "description": "Branded with 'Acme Transfers'",
+    "registration": "AB-123-XYZ"
+  }
+}
