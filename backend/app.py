@@ -103,6 +103,151 @@ def get_bookings(
         raise HTTPException(status_code=502, detail=detail)
 
 
+import pandas as pd
+import io
+from fastapi.responses import StreamingResponse
+
+import uuid
+from fastapi import BackgroundTasks
+
+# In-memory storage for export tasks
+tasks = {}
+
+# This is the long-running function that will be executed in the background
+def run_export_task(task_id: str, dateFrom: str, dateTo: str):
+    """
+    Fetches all booking summaries, then fetches full details for each,
+    updates progress in the tasks dict, and stores the final Excel file.
+    """
+    try:
+        headers = {
+            "Accept": "application/json",
+            "API_KEY": API_KEY,
+            "VERSION": "2025-01"
+        }
+
+        # Step 1: Get all booking summaries from the search endpoint
+        tasks[task_id]["status"] = "fetching_summaries"
+        summary_bookings = []
+        page = 1
+        while True:
+            api_url = f"{END_POINT}/bookings/search/since/{dateFrom}/until/{dateTo}/page/{page}"
+            try:
+                response = requests.get(api_url, headers=headers, timeout=30)
+                if response.status_code == 204 or response.status_code == 404:
+                    break
+                response.raise_for_status()
+                data = response.json()
+                
+                bookings_page = data.get('bookings', [])
+                if isinstance(bookings_page, dict):
+                    summary_bookings.extend(bookings_page.values())
+                else:
+                    summary_bookings.extend(bookings_page)
+
+                if not data.get('more') or not bookings_page:
+                    break
+                page += 1
+            except requests.exceptions.RequestException as e:
+                print(f"Error fetching summary page {page}: {e}")
+                break # Stop on page fetch error
+
+        if not summary_bookings:
+            tasks[task_id]["status"] = "complete"
+            tasks[task_id]["total"] = 0
+            tasks[task_id]["progress"] = 0
+            return
+
+        booking_refs = [b.get('ref') for b in summary_bookings if b.get('ref')]
+        tasks[task_id]["total"] = len(booking_refs)
+        tasks[task_id]["status"] = "fetching_details"
+
+        # Step 2: Fetch full details for each reference
+        detailed_bookings = []
+        for i, ref in enumerate(booking_refs):
+            detail_url = f"{END_POINT}/bookings/{ref}"
+            try:
+                response = requests.get(detail_url, headers=headers, timeout=10)
+                response.raise_for_status()
+                detailed_bookings.append(response.json())
+            except requests.exceptions.RequestException as e:
+                print(f"Could not fetch details for booking {ref}: {e}")
+            
+            # Update progress after each attempt
+            tasks[task_id]["progress"] = i + 1
+
+        # Step 3: Generate Excel file
+        tasks[task_id]["status"] = "generating_file"
+
+        # Unwrap the booking data from the parent object if it exists
+        unwrapped_bookings = [b.get('booking', b) for b in detailed_bookings]
+
+        df = pd.json_normalize(unwrapped_bookings)
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Bookings')
+        output.seek(0)
+        
+        tasks[task_id]["file_data"] = output.read()
+        tasks[task_id]["filename"] = f"bookings_{dateFrom}_to_{dateTo}.xlsx"
+        tasks[task_id]["status"] = "complete"
+
+    except Exception as e:
+        print(f"Error during export task {task_id}: {e}")
+        tasks[task_id]["status"] = "error"
+        tasks[task_id]["error_message"] = str(e)
+
+
+@app.post("/api/export/start")
+async def start_export(
+    background_tasks: BackgroundTasks,
+    dateFrom: str = Query(...),
+    dateTo: str = Query(...)
+):
+    task_id = str(uuid.uuid4())
+    tasks[task_id] = {
+        "status": "pending",
+        "progress": 0,
+        "total": 0,
+        "file_data": None,
+        "filename": None,
+        "error_message": None
+    }
+    background_tasks.add_task(run_export_task, task_id, dateFrom, dateTo)
+    return {"task_id": task_id}
+
+
+@app.get("/api/export/status/{task_id}")
+async def get_export_status(task_id: str):
+    task = tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {
+        "status": task["status"],
+        "progress": task["progress"],
+        "total": task["total"],
+        "error_message": task["error_message"]
+    }
+
+
+@app.get("/api/export/download/{task_id}")
+async def download_export(task_id: str):
+    task = tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task["status"] != "complete":
+        raise HTTPException(status_code=400, detail="Export is not yet complete")
+    if task.get("file_data") is None:
+         raise HTTPException(status_code=404, detail="No data found to export, the source was likely empty.")
+
+    return StreamingResponse(
+        io.BytesIO(task["file_data"]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={task['filename']}"}
+    )
+
+
+
 
 @app.get("/api/bookings/{booking_ref}")
 def get_booking_details(booking_ref: str):
@@ -268,11 +413,6 @@ def update_driver(
         if 200 <= response.status_code < 300:
             return response.json()
         else:
-            # --- DEBUGGING --- #
-            print(f"DEBUG: Supplier API Error Status Code: {response.status_code}")
-            print(f"DEBUG: Supplier API Error Response Text: {response.text}")
-            # --- END DEBUGGING --- #
-
             reason = "UNKNOWN_ERROR"
             message = response.text
             try:

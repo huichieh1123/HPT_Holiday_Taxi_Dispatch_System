@@ -19,6 +19,7 @@
       :loading="loading"
       :has-searched="hasSearched"
       :pagination="pagination"
+      :search-dates="searchDates"
       @select-booking="handleSelectBooking"
       @page-change="handlePageChange"
     />
