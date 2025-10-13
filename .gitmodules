@@ -1,0 +1,3 @@
+[submodule "backend/src/ple"]
+	path = backend/src/ple
+	url = https://github.com/ntasfi/PyGame-Learning-Environment.git
