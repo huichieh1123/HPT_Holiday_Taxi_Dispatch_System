@@ -15,10 +15,14 @@
       <h3 class="mt-2">Raw JSON</h3>
       <pre>{{ JSON.stringify(selectedBooking, null, 2) }}</pre>
 
+      <div v-if="isBookingLocked" class="message error">
+        This booking cannot be updated because its current status is '{{ bookingStatus }}' ({{ bookingStatusDescription }}). Only bookings with other statuses can be updated.
+      </div>
+
       <!-- Location Link Generator -->
       <div class="link-generator">
         <h4>Generate Location Update Link</h4>
-        <button @click="generateLocationLink">Generate Link</button>
+        <button @click="generateLocationLink" :disabled="isBookingLocked">Generate Link</button>
         <div v-if="locationUpdateLink" class="generated-link">
           <p>Share this link with the driver:</p>
           <input type="text" :value="locationUpdateLink" readonly />
@@ -27,66 +31,68 @@
       </div>
 
       <!-- Update Driver Form -->
-      <div class="update-form">
-        <h3>Update Driver & Vehicle</h3>
-        <div class="form-grid">
-          <div class="form-group">
-            <label>Driver Name:</label>
-            <input v-model="driverForm.name" placeholder="e.g., John Doe" />
-          </div>
-          <div class="form-group">
-            <label>License Number:</label>
-            <input v-model="driverForm.licenseNumber" placeholder="e.g., 123456" />
-          </div>
-          <div class="form-group">
-            <label>Driver Phone:</label>
-            <input v-model="driverForm.phoneNumber" placeholder="e.g., +441234567890" />
-          </div>
+      <fieldset :disabled="isBookingLocked">
+        <div class="update-form">
+          <h3>Update Driver & Vehicle</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Driver Name:</label>
+              <input v-model="driverForm.name" placeholder="e.g., John Doe" />
+            </div>
+            <div class="form-group">
+              <label>License Number:</label>
+              <input v-model="driverForm.licenseNumber" placeholder="e.g., 123456" />
+            </div>
+            <div class="form-group">
+              <label>Driver Phone:</label>
+              <input v-model="driverForm.phoneNumber" placeholder="e.g., +441234567890" />
+            </div>
 
-          <div class="form-group full-width">
-            <label>Available Contact Methods:</label>
-            <div class="checkbox-group">
-              <div v-for="option in contactOptions" :key="option.name" class="checkbox-item">
-                <input type="checkbox" :id="`opt-${option.name}`" v-model="option.checked" />
-                <label :for="`opt-${option.name}`">{{ option.name }}</label>
+            <div class="form-group full-width">
+              <label>Available Contact Methods:</label>
+              <div class="checkbox-group">
+                <div v-for="option in contactOptions" :key="option.name" class="checkbox-item">
+                  <input type="checkbox" :id="`opt-${option.name}`" v-model="option.checked" />
+                  <label :for="`opt-${option.name}`">{{ option.name }}</label>
+                </div>
               </div>
             </div>
-          </div>
 
-          <div class="form-group">
-            <label>Preferred Contact Method:</label>
-            <select v-model="preferredContactMethod">
-              <option v-for="method in availableContactMethods" :key="method" :value="method">{{ method }}</option>
-            </select>
-          </div>
+            <div class="form-group">
+              <label>Preferred Contact Method:</label>
+              <select v-model="preferredContactMethod">
+                <option v-for="method in availableContactMethods" :key="method" :value="method">{{ method }}</option>
+              </select>
+            </div>
 
-          <div class="form-group">
-            <label>Vehicle Brand:</label>
-            <input v-model="vehicleForm.brand" placeholder="e.g., Toyota" />
+            <div class="form-group">
+              <label>Vehicle Brand:</label>
+              <input v-model="vehicleForm.brand" placeholder="e.g., Toyota" />
+            </div>
+            <div class="form-group">
+              <label>Vehicle Model:</label>
+              <input v-model="vehicleForm.model" placeholder="e.g., Prius" />
+            </div>
+            <div class="form-group">
+              <label>Vehicle Color:</label>
+              <input v-model="vehicleForm.color" placeholder="e.g., Blue" />
+            </div>
+            <div class="form-group">
+              <label>Vehicle Registration:</label>
+              <input v-model="vehicleForm.registration" placeholder="e.g., AB-123-XYZ" />
+            </div>
+            <div class="form-group full-width">
+              <label>Vehicle Description:</label>
+              <input v-model="vehicleForm.description" placeholder="e.g., Branded with 'Acme Transfers'" />
+            </div>
           </div>
-          <div class="form-group">
-            <label>Vehicle Model:</label>
-            <input v-model="vehicleForm.model" placeholder="e.g., Prius" />
-          </div>
-          <div class="form-group">
-            <label>Vehicle Color:</label>
-            <input v-model="vehicleForm.color" placeholder="e.g., Blue" />
-          </div>
-          <div class="form-group">
-            <label>Vehicle Registration:</label>
-            <input v-model="vehicleForm.registration" placeholder="e.g., AB-123-XYZ" />
-          </div>
-          <div class="form-group full-width">
-            <label>Vehicle Description:</label>
-            <input v-model="vehicleForm.description" placeholder="e.g., Branded with 'Acme Transfers'" />
-          </div>
+          <button @click="updateDriver" :disabled="updatingDriver || !selectedBooking">
+            {{ updatingDriver ? 'Updating...' : 'Update Driver' }}
+          </button>
+          <div v-if="driverUpdateMessage" class="message success">{{ driverUpdateMessage }}</div>
+          <div v-if="driverUpdateError" class="message error">{{ driverUpdateError }}</div>
         </div>
-        <button @click="updateDriver" :disabled="updatingDriver || !selectedBooking">
-          {{ updatingDriver ? 'Updating...' : 'Update Driver' }}
-        </button>
-        <div v-if="driverUpdateMessage" class="message success">{{ driverUpdateMessage }}</div>
-        <div v-if="driverUpdateError" class="message error">{{ driverUpdateError }}</div>
-      </div>
+      </fieldset>
 
     </div>
   </div>
@@ -100,6 +106,26 @@ const props = defineProps<{
   selectedBooking: BookingNorm | null;
   detailLoading: boolean;
 }>();
+
+// --- Status Logic ---
+const bookingStatus = computed(() => props.selectedBooking?.general?.status);
+const bookingStatusDescription = computed(() => {
+  switch (bookingStatus.value) {
+    case 'PCON': return 'Pending Booking Voucher';
+    case 'ACON': return 'Booking Voucher Approved';
+    case 'PAMM': return 'Pending Amendment';
+    case 'AAMM': return 'Amendment Approved';
+    case 'PCAN': return 'Pending Cancellation';
+    case 'ACAN': return 'Cancellation Approved';
+    default: return 'Unknown Status';
+  }
+});
+
+const isBookingLocked = computed(() => {
+  const status = bookingStatus.value;
+  if (!status) return false;
+  return ['PCON', 'PAMM', 'PCAN', 'ACAN'].includes(status);
+});
 
 // --- State Management ---
 const driverForm = ref({ name: '', phoneNumber: '', licenseNumber: '' });
