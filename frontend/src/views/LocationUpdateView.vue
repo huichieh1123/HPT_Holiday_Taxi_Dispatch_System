@@ -141,8 +141,25 @@ const submitUpdate = async () => {
     );
 
     if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.detail || 'Failed to update location.');
+      const data = await response.json().catch(() => ({ message: 'Failed to parse error response.' }));
+      // The 'message' field might be a stringified JSON.
+      let detail = 'Failed to update location.';
+      if (typeof data.message === 'string') {
+        try {
+          const nestedError = JSON.parse(data.message);
+          if (nestedError.errors) {
+            // Extract the first available error message.
+            const errorKeys = Object.keys(nestedError.errors);
+            if (errorKeys.length > 0) {
+              detail = nestedError.errors[errorKeys[0]];
+            }
+          }
+        } catch (e) {
+          // If parsing fails, use the message as is.
+          detail = data.message;
+        }
+      }
+      throw new Error(detail);
     }
 
     await response.json();
