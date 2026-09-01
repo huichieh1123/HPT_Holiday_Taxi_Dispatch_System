@@ -37,6 +37,7 @@ import BookingSearch from '../components/booking/BookingSearch.vue';
 import BookingList from '../components/booking/BookingList.vue';
 import BookingDetail from '../components/booking/BookingDetail.vue';
 import type { BookingNorm } from '../types/booking';
+import { parseApiError, parseApiErrorResponse } from '../utils/apiError';
 
 // ---------- helpers ----------
 const first = (...vals: any[]) => vals.find(v => v !== undefined && v !== null && v !== '');
@@ -48,8 +49,16 @@ const getRef = (b: any) => {
   return typeof ref === 'string' ? ref.trim() : ref;
 };
 
-const getLegType = (b: any): 'arrival' | 'departure' | 'return' | 'unknown' => {
+const getLegType = (b: any): BookingNorm['__leg'] => {
   const x = unwrap(b);
+  const bookingType = String(first(x?.bookingtype, x?.general?.bookingtype) ?? '').toLowerCase();
+
+  if (bookingType.includes('return transfer') || (x?.arrival && x?.departure)) return 'return';
+  if (bookingType === 'arrival' || bookingType.includes('single outbound')) return 'arrival';
+  if (bookingType === 'departure' || bookingType.includes('single return')) return 'departure';
+  if (bookingType === 'tailormade' || bookingType === 'quote' || x?.tailormade || x?.quote) {
+    return 'tailormade';
+  }
   if (x?.arrival) return 'arrival';
   if (x?.departure) return 'departure';
   if (x?.arrivaldate || x?.general?.arrivaldate) return 'arrival';
@@ -58,14 +67,16 @@ const getLegType = (b: any): 'arrival' | 'departure' | 'return' | 'unknown' => {
   const fromAirport = first(x?.fromairport, x?.fromairportcode, x?.arrival?.fromairport, x?.arrival?.fromairportcode);
   if (toAirport) return 'departure';
   if (fromAirport) return 'arrival';
-  const bt = x?.general?.bookingtype || x?.bookingtype || '';
-  if (typeof bt === 'string' && bt.toLowerCase().includes('return')) return 'return';
   return 'unknown';
 };
 
 const getFlightNo = (b: any) => {
   const x = unwrap(b);
   return first(
+    x?.arrival?.pickup?.flightnumber,
+    x?.departure?.dropoff?.flightnumber,
+    x?.arrival?.dropoff?.flightnumber,
+    x?.departure?.pickup?.flightnumber,
     x?.transfers?.[0]?.flight?.flightNumber,
     x?.arrival?.flightno,
     x?.departure?.flightno,
@@ -79,12 +90,38 @@ const getFlightNo = (b: any) => {
 
 const getArrivalDate = (b: any) => {
   const x = unwrap(b);
-  return first(x?.arrival?.arrivaldate, x?.general?.arrivaldate, x?.arrivaldate);
+  return first(
+    x?.arrival?.pickup?.arrivaldate,
+    x?.arrival?.arrivaldate,
+    x?.general?.arrivaldate,
+    x?.arrivaldate,
+  );
 };
 
 const getDepartureDate = (b: any) => {
   const x = unwrap(b);
-  return first(x?.departure?.departuredate, x?.general?.departuredate, x?.departuredate);
+  return first(
+    x?.departure?.dropoff?.departuredate,
+    x?.departure?.departuredate,
+    x?.general?.departuredate,
+    x?.departuredate,
+  );
+};
+
+const getPassengerName = (b: any) => {
+  const x = unwrap(b);
+  const separatedName = [
+    x?.passengertitle,
+    x?.passengerfirstname,
+    x?.passengerlastname,
+  ].filter(Boolean).join(' ');
+
+  return first(
+    x?.passengername,
+    x?.general?.leadpassenger?.name,
+    x?.general?.passengername,
+    separatedName,
+  );
 };
 
 const normalize = (v: any): BookingNorm => {
@@ -96,7 +133,7 @@ const normalize = (v: any): BookingNorm => {
     __flightNo: getFlightNo(x) ?? null,
     __arrivalDate: getArrivalDate(x) ?? null,
     __departureDate: getDepartureDate(x) ?? null,
-    __passenger: first(x?.passengername, x?.general?.passengername) ?? null,
+    __passenger: getPassengerName(x) ?? null,
   };
 };
 
@@ -123,6 +160,7 @@ const fetchBookings = async (page: number) => {
 
   loading.value = true;
   error.value = null;
+  directFetchError.value = null;
   hasSearched.value = true;
   if (page === 1) {
     bookings.value = [];
@@ -138,8 +176,8 @@ const fetchBookings = async (page: number) => {
 
     const response = await fetch(`${API_BASE_URL}/api/bookings?${params.toString()}`);
     if (!response.ok) {
-      const e = await response.json().catch(() => ({}));
-      throw new Error(e.detail || `Failed to fetch bookings (${response.status})`);
+      error.value = await parseApiErrorResponse(response, { operation: 'booking-list' });
+      return;
     }
     const data = await response.json();
 
@@ -150,8 +188,8 @@ const fetchBookings = async (page: number) => {
     // The hydration logic can still run on the newly fetched page
     hydrateListWithDetails(5);
 
-  } catch (err: any) {
-    error.value = err?.message ?? String(err);
+  } catch (err: unknown) {
+    error.value = parseApiError(err, { operation: 'booking-list' });
   } finally {
     loading.value = false;
   }
@@ -171,20 +209,21 @@ const handlePageChange = (newPage: number) => {
 const handleSearchByRef = async (refId: string) => {
   directFetchLoading.value = true;
   directFetchError.value = null;
+  error.value = null;
   selectedBooking.value = null;
 
   try {
     const res = await fetch(`${API_BASE_URL}/api/bookings/${encodeURIComponent(refId)}`);
     if (!res.ok) {
-      const e = await res.json().catch(() => ({}));
-      throw new Error(e.detail || `Failed to fetch booking (${res.status})`);
+      directFetchError.value = await parseApiErrorResponse(res, { operation: 'booking-detail' });
+      return;
     }
     const raw = await res.json();
     selectedBooking.value = normalize(raw);
     bookings.value = [];
     hasSearched.value = false;
-  } catch (e: any) {
-    directFetchError.value = e?.message ?? String(e);
+  } catch (e: unknown) {
+    directFetchError.value = parseApiError(e, { operation: 'booking-detail' });
   } finally {
     directFetchLoading.value = false;
   }
@@ -192,11 +231,13 @@ const handleSearchByRef = async (refId: string) => {
 
 const handleSelectBooking = async (booking: BookingNorm) => {
   detailLoading.value = true;
+  error.value = null;
+  directFetchError.value = null;
   selectedBooking.value = null; // Clear previous selection first
 
   const ref = booking.__ref;
   if (!ref) {
-    error.value = 'Invalid booking: missing reference';
+    error.value = 'This booking cannot be opened because its reference is missing.';
     detailLoading.value = false;
     return;
   }
@@ -204,8 +245,8 @@ const handleSelectBooking = async (booking: BookingNorm) => {
   try {
     const res = await fetch(`${API_BASE_URL}/api/bookings/${encodeURIComponent(ref)}`);
     if (!res.ok) {
-      const e = await res.json().catch(() => ({}));
-      throw new Error(e.detail || 'Failed to fetch booking details');
+      error.value = await parseApiErrorResponse(res, { operation: 'booking-detail' });
+      return;
     }
     const raw = await res.json();
     const norm = normalize(raw);
@@ -213,8 +254,8 @@ const handleSelectBooking = async (booking: BookingNorm) => {
 
     const idx = bookings.value.findIndex(b => b.__ref === norm.__ref);
     if (idx !== -1) bookings.value[idx] = { ...bookings.value[idx], ...norm };
-  } catch (e: any) {
-    error.value = e?.message ?? String(e);
+  } catch (e: unknown) {
+    error.value = parseApiError(e, { operation: 'booking-detail' });
   } finally {
     detailLoading.value = false;
   }

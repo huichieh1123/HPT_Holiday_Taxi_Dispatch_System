@@ -12,8 +12,23 @@
         <div><strong>Passenger:</strong> {{ selectedBooking.__passenger || 'N/A' }}</div>
       </div>
 
-      <h3 class="mt-2">Raw JSON</h3>
-      <pre>{{ JSON.stringify(selectedBooking, null, 2) }}</pre>
+      <div class="technical-details">
+        <button
+          type="button"
+          class="technical-toggle"
+          :aria-expanded="showRawJson"
+          aria-controls="booking-technical-details"
+          @click="showRawJson = !showRawJson"
+        >
+          {{ showRawJson ? 'Hide Technical Details' : 'Show Technical Details' }}
+        </button>
+        <div v-if="showRawJson" id="booking-technical-details" class="technical-content">
+          <p class="technical-note">
+            This information is intended for troubleshooting and support.
+          </p>
+          <pre>{{ JSON.stringify(selectedBooking, null, 2) }}</pre>
+        </div>
+      </div>
 
       <div v-if="isBookingLocked" class="message error">
         This booking cannot be updated because its current status is '{{ bookingStatus }}' ({{ bookingStatusDescription }}). Only bookings with other statuses can be updated.
@@ -100,7 +115,8 @@
 
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue';
-import type { BookingNorm, DriverForm, VehicleForm } from '../../types/booking';
+import type { BookingNorm, VehicleForm } from '../../types/booking';
+import { parseApiError, parseApiErrorResponse } from '../../utils/apiError';
 
 const props = defineProps<{
   selectedBooking: BookingNorm | null;
@@ -153,6 +169,7 @@ const driverUpdateMessage = ref<string | null>(null);
 const driverUpdateError = ref<string | null>(null);
 
 const locationUpdateLink = ref('');
+const showRawJson = ref(false);
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 // --- Lifecycle & Watchers ---
@@ -160,6 +177,7 @@ watch(() => props.selectedBooking, () => {
   driverUpdateMessage.value = null;
   driverUpdateError.value = null;
   locationUpdateLink.value = '';
+  showRawJson.value = false;
 });
 
 // --- Helper Functions ---
@@ -194,19 +212,18 @@ const updateDriver = async () => {
     });
 
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
+      const data = await res.clone().json().catch(() => ({}));
       if (data.reason === 'TOO_MANY_DISTINCT_VEHICLE_IDENTIFIERS_FOR_THIS_BOOKING') {
         const idToDelete = prompt('Too many vehicles assigned. Please enter the ID of the OLD vehicle to delete and retry:');
         if (idToDelete?.trim()) {
           await deleteVehicleAndRetryDriverUpdate(ref, idToDelete.trim());
           return; // Exit after starting the retry flow
         }
-        throw new Error('Vehicle deletion cancelled by user.');
+        driverUpdateError.value = 'Driver and vehicle details were not updated because vehicle removal was cancelled.';
+        return;
       }
-      if (data.message && typeof data.message === 'object' && data.message.errors) {
-        throw new Error(JSON.stringify(data.message.errors, null, 2));
-      }
-      throw new Error(data.message?.message || data.detail || 'Update failed');
+      driverUpdateError.value = await parseApiErrorResponse(res, { operation: 'driver-update' });
+      return;
     }
 
     let successMsg = 'Driver & vehicle updated successfully.';
@@ -216,8 +233,8 @@ const updateDriver = async () => {
     }
     driverUpdateMessage.value = successMsg;
 
-  } catch (e: any) {
-    driverUpdateError.value = e.message;
+  } catch (e: unknown) {
+    driverUpdateError.value = parseApiError(e, { operation: 'driver-update' });
   }
   finally {
     updatingDriver.value = false;
@@ -231,13 +248,14 @@ const deleteVehicleAndRetryDriverUpdate = async (bookingRef: string, vehicleId: 
   try {
     const res = await fetch(`${API_BASE_URL}/api/bookings/${encodeURIComponent(bookingRef)}/vehicles/${encodeURIComponent(vehicleId)}`, { method: 'DELETE' });
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.message || 'Failed to delete old vehicle.');
+      driverUpdateError.value = await parseApiErrorResponse(res, { operation: 'vehicle-delete' });
+      updatingDriver.value = false;
+      return;
     }
     driverUpdateMessage.value = 'Old vehicle deleted. Retrying driver update...';
     setTimeout(() => updateDriver(), 1500);
-  } catch (e: any) {
-    driverUpdateError.value = e.message;
+  } catch (e: unknown) {
+    driverUpdateError.value = parseApiError(e, { operation: 'vehicle-delete' });
     updatingDriver.value = false;
   }
 };
@@ -269,6 +287,11 @@ const copyLinkToClipboard = () => {
 .details { margin-top: 30px; padding: 20px; border: 1px solid #ccc; border-radius: 8px; background-color: #fafafa; }
 .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 20px; margin-bottom: 14px; }
 pre { background-color: #eee; padding: 15px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; max-height: 400px; overflow-y: auto; }
+.technical-details { margin: 16px 0 24px; }
+.technical-toggle { background-color: #6c757d; }
+.technical-toggle:hover { background-color: #5a6268; }
+.technical-content { margin-top: 12px; }
+.technical-note { margin: 0 0 8px; color: #666; font-size: 0.9rem; }
 .update-form { margin-top: 20px; }
 .update-form h3 { margin-bottom: 15px; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin-bottom: 20px; }

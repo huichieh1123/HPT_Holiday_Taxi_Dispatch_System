@@ -47,6 +47,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import { useRoute } from 'vue-router';
+import { parseApiError, parseApiErrorResponse } from '../utils/apiError';
 
 const route = useRoute();
 
@@ -77,11 +78,12 @@ const fetchStatuses = async () => {
   try {
     const response = await fetch(`${API_BASE_URL}/api/statuses`);
     if (!response.ok) {
-      throw new Error('Failed to fetch statuses.');
+      error.value = await parseApiErrorResponse(response, { operation: 'status-list' });
+      return;
     }
     availableStatuses.value = await response.json();
-  } catch (err: any) {
-    error.value = err.message || 'Could not load statuses from backend.';
+  } catch (err: unknown) {
+    error.value = parseApiError(err, { operation: 'status-list' });
   }
 };
 
@@ -141,31 +143,14 @@ const submitUpdate = async () => {
     );
 
     if (!response.ok) {
-      const data = await response.json().catch(() => ({ message: 'Failed to parse error response.' }));
-      // The 'message' field might be a stringified JSON.
-      let detail = 'Failed to update location.';
-      if (typeof data.message === 'string') {
-        try {
-          const nestedError = JSON.parse(data.message);
-          if (nestedError.errors) {
-            // Extract the first available error message.
-            const errorKeys = Object.keys(nestedError.errors);
-            if (errorKeys.length > 0) {
-              detail = nestedError.errors[errorKeys[0]];
-            }
-          }
-        } catch (e) {
-          // If parsing fails, use the message as is.
-          detail = data.message;
-        }
-      }
-      throw new Error(detail);
+      error.value = await parseApiErrorResponse(response, { operation: 'location-update' });
+      return;
     }
 
     await response.json();
     successMessage.value = 'Location updated successfully!';
-  } catch (err: any) {
-    error.value = err.message || 'An unknown error occurred.';
+  } catch (err: unknown) {
+    error.value = parseApiError(err, { operation: 'location-update' });
   } finally {
     submitting.value = false;
   }

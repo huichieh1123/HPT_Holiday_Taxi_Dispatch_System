@@ -1,6 +1,6 @@
 export type BookingNorm = {
   __ref: string | null;
-  __leg: 'arrival' | 'departure' | 'return' | 'unknown';
+  __leg: 'arrival' | 'departure' | 'return' | 'tailormade' | 'unknown';
   __flightNo: string | null;
   __arrivalDate: string | null;
   __departureDate: string | null;

@@ -13,8 +13,8 @@
       <div v-if="isExporting" class="progress-container">
         <p>{{ exportStatusMessage }} ({{ exportProgress }} / {{ exportTotal }})</p>
         <progress :value="exportProgress" :max="exportTotal"></progress>
-        <p v-if="exportError" class="error-message">Error: {{ exportError }}</p>
       </div>
+      <p v-if="exportError" class="message error-message">{{ exportError }}</p>
 
       <ul class="booking-list">
         <li
@@ -54,6 +54,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import type { BookingNorm } from '../../types/booking';
+import { parseApiError, parseApiErrorResponse } from '../../utils/apiError';
 
 // Define props including the new pagination object
 const props = defineProps<{ 
@@ -95,12 +96,40 @@ const exportStatusMessage = computed(() => {
   }
 });
 
+const downloadExport = async (taskId: string) => {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/export/download/${taskId}`);
+    if (!res.ok) {
+      exportError.value = await parseApiErrorResponse(res, { operation: 'export-download' });
+      return;
+    }
+
+    const blob = await res.blob();
+    const disposition = res.headers.get('Content-Disposition') ?? '';
+    const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = filenameMatch?.[1] ?? 'holiday-taxi-bookings.xlsx';
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  } catch (err: unknown) {
+    exportError.value = parseApiError(err, { operation: 'export-download' });
+  }
+};
+
 const pollExportStatus = (taskId: string) => {
   pollingInterval = window.setInterval(async () => {
     try {
       const res = await fetch(`${API_BASE_URL}/api/export/status/${taskId}`);
       if (!res.ok) {
-        throw new Error('Failed to get export status.');
+        exportError.value = await parseApiErrorResponse(res, { operation: 'export-status' });
+        if (pollingInterval) clearInterval(pollingInterval);
+        isExporting.value = false;
+        return;
       }
       const data = await res.json();
       
@@ -110,16 +139,16 @@ const pollExportStatus = (taskId: string) => {
 
       if (data.status === 'complete') {
         if (pollingInterval) clearInterval(pollingInterval);
-        window.location.href = `${API_BASE_URL}/api/export/download/${taskId}`;
+        await downloadExport(taskId);
         setTimeout(() => { isExporting.value = false; }, 2000);
       } else if (data.status === 'error') {
         if (pollingInterval) clearInterval(pollingInterval);
-        exportError.value = data.error_message || 'Unknown error during export.';
+        exportError.value = parseApiError(data, { operation: 'export-status' });
         isExporting.value = false;
       }
-    } catch (err) {
+    } catch (err: unknown) {
       if (pollingInterval) clearInterval(pollingInterval);
-      exportError.value = 'Failed to connect to the server for status updates.';
+      exportError.value = parseApiError(err, { operation: 'export-status' });
       isExporting.value = false;
     }
   }, 2000);
@@ -144,12 +173,14 @@ const startExport = async () => {
     });
     const res = await fetch(`${API_BASE_URL}/api/export/start?${params.toString()}`, { method: 'POST' });
     if (!res.ok) {
-      throw new Error('Failed to start the export process.');
+      exportError.value = await parseApiErrorResponse(res, { operation: 'export-start' });
+      isExporting.value = false;
+      return;
     }
     const { task_id } = await res.json();
     pollExportStatus(task_id);
-  } catch (err: any) {
-    exportError.value = err.message || 'Could not start export.';
+  } catch (err: unknown) {
+    exportError.value = parseApiError(err, { operation: 'export-start' });
     isExporting.value = false;
   }
 };
@@ -223,7 +254,9 @@ const emitSelectBooking = (booking: BookingNorm) => {
 }
 
 .error-message {
-  color: #721c24; /* Bootstrap's danger color */
+  color: #721c24;
+  background-color: #f8d7da;
+  border: 1px solid #f5c6cb;
 }
 
 .booking-list {

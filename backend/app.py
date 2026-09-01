@@ -33,12 +33,52 @@ app.add_middleware(
 # Load API Key and Endpoint from environment variables
 API_KEY = os.getenv('API_KEY')
 END_POINT = os.getenv('END_POINT')
+SUPPLIER_CONNECT_VERSION = os.getenv('SUPPLIER_CONNECT_VERSION', '2026-A')
 
 if not API_KEY or not END_POINT:
     raise RuntimeError("API_KEY and END_POINT must be set in the .env file")
 
 # Available trip statuses
 TRIP_STATUSES = ["BEFORE_PICKUP", "WAITING_FOR_CUSTOMER", "AFTER_PICKUP", "COMPLETED", "NO_SHOW"]
+
+
+def supplier_headers(include_content_type: bool = False):
+    """Build the common headers required by Holiday Taxis SupplierConnect."""
+    headers = {
+        "Accept": "application/json",
+        "API_KEY": API_KEY,
+        "VERSION": SUPPLIER_CONNECT_VERSION,
+    }
+    if include_content_type:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
+def parse_search_response(data):
+    """Normalize SupplierConnect search results and pagination metadata."""
+    if isinstance(data, list):
+        return [booking for booking in data if isinstance(booking, dict)], False
+
+    if not isinstance(data, dict):
+        return [], False
+
+    raw_bookings = data.get('bookings', [])
+    has_next_page = bool(data.get('more'))
+
+    if isinstance(raw_bookings, dict):
+        # SupplierConnect examples may include `more` inside the bookings object.
+        has_next_page = has_next_page or bool(raw_bookings.get('more'))
+        bookings = [
+            booking
+            for key, booking in raw_bookings.items()
+            if key != 'more' and isinstance(booking, dict)
+        ]
+    elif isinstance(raw_bookings, list):
+        bookings = [booking for booking in raw_bookings if isinstance(booking, dict)]
+    else:
+        bookings = []
+
+    return bookings, has_next_page
 
 class LocationUpdateRequest(BaseModel):
     lat: float
@@ -52,11 +92,7 @@ def get_bookings(
     page: int = Query(1, ge=1)
 ):
     """Search for bookings for a specific page within a date range."""
-    headers = {
-        "Accept": "application/json",
-        "API_KEY": API_KEY,
-        "VERSION": "2025-01"
-    }
+    headers = supplier_headers()
 
     api_url = f"{END_POINT}/bookings/search/since/{dateFrom}/until/{dateTo}/page/{page}"
 
@@ -70,17 +106,7 @@ def get_bookings(
         response.raise_for_status()
         data = response.json()
 
-        # The external API response is expected to be a dictionary
-        # with a 'bookings' list and an optional 'more' URL.
-        bookings_list = []
-        has_next_page = False
-
-        if isinstance(data, dict):
-            bookings_list = data.get('bookings', [])
-            has_next_page = bool(data.get('more'))
-        elif isinstance(data, list):
-            # Handle cases where the last page might just be a list
-            bookings_list = data
+        bookings_list, has_next_page = parse_search_response(data)
 
         pagination_info = {
             "current_page": page,
@@ -120,11 +146,7 @@ def run_export_task(task_id: str, dateFrom: str, dateTo: str):
     updates progress in the tasks dict, and stores the final Excel file.
     """
     try:
-        headers = {
-            "Accept": "application/json",
-            "API_KEY": API_KEY,
-            "VERSION": "2025-01"
-        }
+        headers = supplier_headers()
 
         # Step 1: Get all booking summaries from the search endpoint
         tasks[task_id]["status"] = "fetching_summaries"
@@ -138,14 +160,10 @@ def run_export_task(task_id: str, dateFrom: str, dateTo: str):
                     break
                 response.raise_for_status()
                 data = response.json()
-                
-                bookings_page = data.get('bookings', [])
-                if isinstance(bookings_page, dict):
-                    summary_bookings.extend(bookings_page.values())
-                else:
-                    summary_bookings.extend(bookings_page)
+                bookings_page, has_next_page = parse_search_response(data)
+                summary_bookings.extend(bookings_page)
 
-                if not data.get('more') or not bookings_page:
+                if not has_next_page or not bookings_page:
                     break
                 page += 1
             except requests.exceptions.RequestException as e:
@@ -252,11 +270,7 @@ async def download_export(task_id: str):
 @app.get("/api/bookings/{booking_ref}")
 def get_booking_details(booking_ref: str):
     """Get the full details for a single booking by its reference."""
-    headers = {
-        "Accept": "application/json",
-        "API_KEY": API_KEY,
-        "VERSION": "2025-01"
-    }
+    headers = supplier_headers()
     api_url = f"{END_POINT}/bookings/{booking_ref}"
 
     try:
@@ -268,25 +282,6 @@ def get_booking_details(booking_ref: str):
         if e.response is not None:
             detail += f" - {e.response.text}"
         raise HTTPException(status_code=502, detail=detail)
-    headers = {
-        "Accept": "application/json",
-        "API_KEY": API_KEY,
-        "VERSION": "2025-01"
-    }
-    # URL format corrected by user
-    print(dateFrom, dateTo, page)
-
-    api_url = f"{END_POINT}/bookings/search/since/{dateFrom}/until/{dateTo}/page/{page}"
-
-
-    try:
-        response = requests.get(api_url, headers=headers)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"External API error: {e}")
-
-from urllib.parse import quote
 
 @app.post("/api/bookings/{booking_ref}/vehicles/{vehicle_identifier}/location")
 def update_location(
@@ -301,12 +296,7 @@ def update_location(
     if not (-90 <= update_request.lat <= 90 and -180 <= update_request.lng <= 180):
         raise HTTPException(status_code=400, detail="Invalid lat/lng range")
 
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "API_KEY": API_KEY,
-        "VERSION": "2025-01"
-    }
+    headers = supplier_headers(include_content_type=True)
 
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     payload = {
@@ -395,12 +385,7 @@ def update_driver(
     update_request: DriverUpdateRequest
 ):
     """Update the driver and vehicle information for a specific booking."""
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "API_KEY": API_KEY,
-        "VERSION": "2025-01"
-    }
+    headers = supplier_headers(include_content_type=True)
     if not update_request.vehicle.registration:
         raise HTTPException(status_code=400, detail="Vehicle registration cannot be empty")
 
@@ -440,12 +425,7 @@ def update_driver(
 @app.delete("/api/bookings/{booking_ref}/vehicles/{vehicle_identifier}")
 def delete_vehicle(booking_ref: str, vehicle_identifier: str):
     """Deletes a vehicle from a specific booking."""
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "API_KEY": API_KEY,
-        "VERSION": "2025-01"
-    }
+    headers = supplier_headers(include_content_type=True)
     api_url = f"{END_POINT}/bookings/{booking_ref}/vehicles/{quote(vehicle_identifier, safe='')}"
 
     try:
